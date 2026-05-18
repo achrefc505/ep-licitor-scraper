@@ -10,6 +10,11 @@ from loguru import logger
 
 from ..config import settings
 
+try:
+    from playwright_stealth import stealth_async
+except ImportError:  # pragma: no cover - optional hardening
+    stealth_async = None
+
 
 @asynccontextmanager
 async def browser_session():
@@ -55,6 +60,8 @@ async def fetch_page(context: BrowserContext, url: str) -> tuple[int, str]:
     """
     page: Page = await context.new_page()
     try:
+        if stealth_async is not None:
+            await stealth_async(page)
         response = await page.goto(
             url,
             wait_until="domcontentloaded",

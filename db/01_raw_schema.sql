@@ -4,6 +4,10 @@
 -- L'application user (EncheresPredict) ne lit JAMAIS cette base directement.
 -- ============================================================================
 
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
 IF DB_ID('EncheresPredict_Raw') IS NULL
 BEGIN
     CREATE DATABASE EncheresPredict_Raw;

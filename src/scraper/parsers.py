@@ -80,6 +80,15 @@ def _parse_date_fr(text: str | None) -> date | None:
     return None
 
 
+def _parse_datetime_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _parse_postal(text: str | None) -> tuple[str | None, str | None]:
     """Sépare '75011 Paris' en ('75011', 'Paris')."""
     if not text:
@@ -94,42 +103,81 @@ def _parse_postal(text: str | None) -> tuple[str | None, str | None]:
 # Liste historique : URL exemple https://www.licitor.com/historique-des-adjudications.html
 # Retourne une liste de dict {source_id, source_url, ...champs basiques}
 # ---------------------------------------------------------------------------
-def parse_historique_list(html: str) -> list[dict]:
+def parse_historique_list(html: str, *, archives_only: bool = True) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
 
-    # ⚠️  Sélecteurs à AJUSTER après inspection du vrai HTML.
-    # Conventions probables Licitor : table.results, .annonce, .vente-item...
     items: list[dict] = []
+    seen: set[str] = set()
 
-    # Tentative 1 : tableau classique
+    def add_item(href: str, **fields):
+        if not href:
+            return
+        url = urljoin(BASE_URL, href)
+        if url in seen:
+            return
+        seen.add(url)
+        items.append({
+            "source": "licitor",
+            "source_id": _extract_source_id(href),
+            "source_url": url,
+            **fields,
+        })
+
+    # Pages d'audience Licitor : les biens sont listés sous forme de cartes.
+    for card in soup.select("ul.AdResults a.Ad[href*='/annonce/']"):
+        classes = set(card.get("class", []))
+        if archives_only and "Archives" not in classes:
+            continue
+        href = card.get("href", "")
+        name = _clean(card.select_one(".Description .Name").get_text() if card.select_one(".Description .Name") else None)
+        text = _clean(card.select_one(".Description .Text").get_text() if card.select_one(".Description .Text") else None)
+        city = _clean(card.select_one(".Location .City").get_text() if card.select_one(".Location .City") else None)
+        postal_code = _clean(card.select_one(".Location .Number").get_text() if card.select_one(".Location .Number") else None)
+        price_text = _clean(card.select_one(".Price .PriceNumber").get_text() if card.select_one(".Price .PriceNumber") else None)
+        date_text = _clean(card.select_one(".Price .Result").get_text() if card.select_one(".Price .Result") else None)
+        add_item(
+            href,
+            title_preview=_clean(card.get("title")) or name,
+            property_type=name,
+            description=" - ".join(part for part in (name, text) if part),
+            city=city,
+            postal_code=postal_code,
+            surface=_parse_surface(text),
+            adjudicated_price=_parse_price(price_text) if "Archives" in classes else None,
+            initial_price=_parse_price(price_text) if "Archives" not in classes else None,
+            adjudication_date=_parse_date_fr(date_text.split(":")[0]) if date_text else None,
+        )
+
+    if items:
+        logger.info("Liste historique : {} annonces parsées", len(items))
+        return items
+
+    # Page racine historique : elle renvoie vers les dernières audiences par tribunal.
+    for link in soup.select("#calendar a[href*='/ventes-judiciaires-immobilieres/']"):
+        href = link.get("href", "")
+        add_item(
+            href,
+            item_type="hearing",
+            title_preview=_clean(link.get("title")) or _clean(link.get_text()),
+        )
+
+    if items:
+        logger.info("Liste historique : {} audiences parsées", len(items))
+        return items
+
+    # Fallbacks génériques.
     for row in soup.select("table.results tr, table.adjudications tr, table tr.annonce"):
         link = row.select_one("a[href*='adjudication'], a[href*='/vente/'], a[href*='/annonce/']")
         if not link:
             continue
-        href = link.get("href", "")
-        url = urljoin(BASE_URL, href)
-        source_id = _extract_source_id(href)
-        items.append({
-            "source": "licitor",
-            "source_id": source_id,
-            "source_url": url,
-            "title_preview": _clean(link.get_text()),
-        })
+        add_item(link.get("href", ""), title_preview=_clean(link.get_text()))
 
-    # Tentative 2 : cartes / annonces
     if not items:
         for card in soup.select("article.annonce, .vente-item, .listing-item, .item-vente"):
             link = card.select_one("a[href*='adjudication'], a[href*='/vente/'], a[href*='/annonce/']")
             if not link:
                 continue
-            href = link.get("href", "")
-            url = urljoin(BASE_URL, href)
-            items.append({
-                "source": "licitor",
-                "source_id": _extract_source_id(href),
-                "source_url": url,
-                "title_preview": _clean(link.get_text()),
-            })
+            add_item(link.get("href", ""), title_preview=_clean(link.get_text()))
 
     logger.info("Liste historique : {} items parsés", len(items))
     return items
@@ -143,15 +191,23 @@ def parse_historique_pagination(html: str) -> dict:
     next_url = None
 
     # Sélecteurs probables
-    pag = soup.select_one(".pagination, nav.pages, ul.pages")
+    pag = soup.select_one(".pagination, .Pagination, nav.pages, ul.pages")
     if pag:
+        current_input = pag.select_one("input[name=p]")
+        if current_input and (current_input.get("value") or "").isdigit():
+            current = int(current_input["value"])
+        page_total = pag.select_one(".PageTotal")
+        if page_total:
+            total_match = re.search(r"(\d+)", page_total.get_text(" "))
+            if total_match:
+                total = int(total_match.group(1))
         active = pag.select_one(".active, .current, strong")
         if active and active.get_text(strip=True).isdigit():
             current = int(active.get_text(strip=True))
         nums = [int(a.get_text(strip=True)) for a in pag.select("a, span") if a.get_text(strip=True).isdigit()]
         if nums:
             total = max(nums + [current])
-        nxt = pag.select_one("a[rel=next], a.next, a:contains('»')")
+        nxt = pag.select_one("a[rel=next], a.next, a.Next, a:-soup-contains('»')")
         if nxt and nxt.get("href"):
             next_url = urljoin(BASE_URL, nxt["href"])
 
@@ -170,9 +226,66 @@ def parse_adjudication_detail(html: str, source_url: str) -> dict:
         "source_url": source_url,
     }
 
-    # Titre / description
+    # Structure réelle Licitor.
+    court = soup.select_one(".Court")
+    if court:
+        data["tribunal"] = _clean(court.get_text())
+
+    time_el = soup.select_one(".Date time[datetime]")
+    dt = _parse_datetime_iso(time_el.get("datetime")) if time_el else None
+    if dt:
+        data["adjudication_date"] = dt.date()
+
+    lot = soup.select_one(".AddressBlock .Lot")
+    if lot:
+        title = lot.select_one(".SousLot h2, h2")
+        description_parts = [_clean(el.get_text(" ")) for el in lot.select(".SousLot")]
+        description = " ".join(part for part in description_parts if part)
+        if title:
+            data["property_type"] = _clean(title.get_text())
+        if description:
+            data["description"] = description
+            data["surface"] = _parse_surface(description)
+            data["rooms"] = _parse_rooms(description)
+
+        adjudication_title = lot.find(
+            ["h3", "h4"], string=re.compile(r"^\s*Adjudication\s*:", re.IGNORECASE)
+        )
+        if adjudication_title:
+            data["adjudicated_price"] = _parse_price(adjudication_title.get_text())
+        mise_title = lot.find(
+            ["h3", "h4"], string=re.compile(r"Mise à prix\s*:", re.IGNORECASE)
+        )
+        if mise_title:
+            data["initial_price"] = _parse_price(mise_title.get_text())
+
+    address_block = soup.select_one(".AddressBlock")
+    if address_block:
+        address_text = _clean(address_block.get_text(" "))
+        postal_match = re.search(r"\b(\d{5})\s+([A-ZÀ-Ÿ][\wÀ-ÿ' -]+)", address_text or "")
+        if postal_match:
+            data["postal_code"] = postal_match.group(1)
+            data["city"] = _clean(postal_match.group(2))
+
+    trust = soup.select_one(".Trust")
+    if trust:
+        lawyer_title = trust.select_one("h3")
+        if lawyer_title:
+            lawyer_text = _clean(lawyer_title.get_text())
+            data["lawyer_name"] = lawyer_text
+            office_match = re.search(r"du Cabinet\s+(.+?),\s+Avocat", lawyer_text or "", re.IGNORECASE)
+            if office_match:
+                data["lawyer_office"] = _clean(office_match.group(1))
+        email_link = trust.select_one("a[href^=mailto]")
+        if email_link:
+            data["lawyer_email"] = email_link.get("href", "").replace("mailto:", "").strip()
+        tel_match = re.search(r"T[ée]l\.?\s*:\s*([0-9 .+]+)", trust.get_text(" "), re.IGNORECASE)
+        if tel_match:
+            data["lawyer_phone"] = _clean(tel_match.group(1))
+
+    # Fallback titre / description.
     title = soup.select_one("h1, .titre-annonce, .vente-titre")
-    if title:
+    if title and not data.get("description"):
         data["description"] = _clean(title.get_text())
 
     # Bloc d'infos clé-valeur — pattern courant : dl/dt/dd ou table.infos
