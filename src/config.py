@@ -15,6 +15,21 @@ class Settings(BaseSettings):
     db_user: str | None = None
     db_password: str | None = None
 
+    # Base applicative (alimentée par le sync ETL)
+    app_db_server: str = "(localdb)\\mssqllocaldb"
+    app_db_name: str = "EncheresPredict"
+    app_db_trusted: str = "yes"
+    app_db_user: str | None = None
+    app_db_password: str | None = None
+
+    # API ML
+    ml_api_url: str = "http://localhost:8000"
+    ml_api_timeout: int = 10
+
+    # Géocodage
+    geocoder_url: str = "https://api-adresse.data.gouv.fr/search/"
+    geocoder_timeout: int = 10
+
     scraper_user_agent: str = (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -30,24 +45,37 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str = "logs/scraper.log"
 
-    @property
-    def odbc_connection_string(self) -> str:
-        if self.db_trusted.lower() in {"yes", "true", "1"}:
+    @staticmethod
+    def _build_odbc(server, db, trusted, user, password):
+        if trusted.lower() in {"yes", "true", "1"}:
             return (
                 f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-                f"SERVER={self.db_server};DATABASE={self.db_name};"
+                f"SERVER={server};DATABASE={db};"
                 f"Trusted_Connection=yes;TrustServerCertificate=yes;"
             )
         return (
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-            f"SERVER={self.db_server};DATABASE={self.db_name};"
-            f"UID={self.db_user};PWD={self.db_password};TrustServerCertificate=yes;"
+            f"SERVER={server};DATABASE={db};"
+            f"UID={user};PWD={password};TrustServerCertificate=yes;"
         )
+
+    @property
+    def odbc_connection_string(self) -> str:
+        return self._build_odbc(self.db_server, self.db_name, self.db_trusted, self.db_user, self.db_password)
+
+    @property
+    def app_odbc_connection_string(self) -> str:
+        return self._build_odbc(self.app_db_server, self.app_db_name, self.app_db_trusted, self.app_db_user, self.app_db_password)
 
     @property
     def sqlalchemy_url(self) -> str:
         from urllib.parse import quote_plus
         return f"mssql+pyodbc:///?odbc_connect={quote_plus(self.odbc_connection_string)}"
+
+    @property
+    def app_sqlalchemy_url(self) -> str:
+        from urllib.parse import quote_plus
+        return f"mssql+pyodbc:///?odbc_connect={quote_plus(self.app_odbc_connection_string)}"
 
 
 settings = Settings()

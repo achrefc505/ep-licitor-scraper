@@ -145,12 +145,47 @@ Si tu prends des 403 même avec Playwright, par ordre d'agressivité :
 [Application Angular] : utilisateurs voient les données prêtes
 ```
 
+## Pipeline ETL : Raw → App
+
+Après le scraping, 2 commandes pour propager les données vers la base
+applicative `EncheresPredict` (lue par le frontend Angular via le .NET) :
+
+```powershell
+# 1. Géocode les adresses (lat/lng via adresse.data.gouv.fr — gratuit illimité)
+python -m src.cli geocode --limit 500
+
+# 2. Sync vers la DB app : appelle l'API ML pour aiEstimate + upsert Auctions + AiAnalyses
+python -m src.cli sync-app --limit 500
+
+# OU le tout en une commande :
+python -m src.cli pipeline --limit 500
+```
+
+### Prérequis pour le sync
+
+1. **API ML qui tourne** sur `http://localhost:8000` (voir repo `ep-ml-api`)
+2. **Base `EncheresPredict` créée** (par les migrations .NET ou les scripts SQL)
+3. **Variables d'env** dans `.env` :
+   ```env
+   APP_DB_NAME=EncheresPredict
+   ML_API_URL=http://localhost:8000
+   ```
+
+### Comportement
+
+- **Idempotent** : ajoute la colonne `SourceId` à `dbo.Auctions` au 1er run, puis upsert dessus
+- **Filtre** : ignore les `upcoming_auctions` sans `initial_price`
+- **Enrichissement** : appel `ep-ml-api/predict` → `aiEstimate`, `confidence`, `low/high`
+- **Fallback** : si l'API ML est down → estimation = `initial_price × 1.3`
+- **Badge** : calculé selon la même formule que `Domain/ValueObjects/RoiScore.cs` (Tres bonne / Bonne / Neutre / Risque)
+
 ## TODO
 
 - [ ] Inspecter Licitor + ajuster les sélecteurs dans `parsers.py`
 - [ ] Ajouter `playwright-stealth` si 403 persistant
-- [ ] Implémenter `pipeline/transform.py` : enrichissement géocodage + nettoyage
-- [ ] Implémenter `etl/sync_to_app.py` : copie filtrée vers la base `EncheresPredict`
+- [x] Implémenter `pipeline/geocode.py` : adresse.data.gouv.fr ✅
+- [x] Implémenter `pipeline/transform.py` : raw → app + ML ✅
+- [x] Implémenter `pipeline/sync_to_app.py` : upsert idempotent ✅
 - [ ] Tests unitaires sur les parsers avec fixtures HTML
 - [ ] Dockerfile pour exécution containerisée
 - [ ] Scheduler (APScheduler) pour cron quotidien

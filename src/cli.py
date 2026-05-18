@@ -140,6 +140,52 @@ def status():
 
 
 @cli.command()
+@click.option("--limit", type=int, default=200, help="Lignes max par table")
+@click.option("--min-score", type=float, default=0.3, help="Seuil de fiabilité du géocodage")
+def geocode(limit: int, min_score: float):
+    """Géocode les adresses (lat/lng) via adresse.data.gouv.fr."""
+    from .pipeline.geocode import geocode_all
+    result = geocode_all(limit_per_table=limit)
+    for table, stats in result.items():
+        click.echo(f"{table:20} : {stats}")
+
+
+@cli.command(name="sync-app")
+@click.option("--limit", type=int, default=500, help="Enchères max à syncer par run")
+@click.option("--only-after", default=None, help="Date min auction_date (YYYY-MM-DD)")
+def sync_app(limit: int, only_after: str | None):
+    """Sync EncheresPredict_Raw.upcoming_auctions → EncheresPredict.Auctions (App).
+
+    Enrichit chaque enchère via l'API ML (aiEstimate, confidence, badge),
+    puis upsert dans la DB applicative .NET. Idempotent.
+    """
+    from .pipeline.sync_to_app import sync_upcoming
+    stats = sync_upcoming(limit=limit, only_after=only_after)
+    click.echo(
+        f"[done] inserted={stats['inserted']} updated={stats['updated']} "
+        f"skipped={stats['skipped']} errors={stats['errors']}"
+    )
+
+
+@cli.command()
+@click.option("--limit", type=int, default=500)
+def pipeline(limit: int):
+    """Pipeline complet : geocode + sync-app.
+
+    À lancer après chaque run de scraping pour propager les nouvelles données
+    vers la base applicative consommée par le frontend.
+    """
+    from .pipeline.geocode import geocode_all
+    from .pipeline.sync_to_app import sync_upcoming
+
+    click.echo("─── Étape 1/2 : géocodage ───")
+    geocode_all(limit_per_table=limit)
+    click.echo("─── Étape 2/2 : sync vers app ───")
+    stats = sync_upcoming(limit=limit)
+    click.echo(f"\n[pipeline done] {stats}")
+
+
+@cli.command()
 @click.argument("url")
 def inspect(url: str):
     """Télécharge une page et affiche sa structure (debug sélecteurs)."""

@@ -11,3 +11,4 @@ click==8.1.7
 tenacity==9.0.0
 loguru==0.7.3
 tqdm==4.67.1
+httpx==0.28.1
