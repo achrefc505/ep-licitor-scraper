@@ -214,5 +214,108 @@ def inspect(url: str):
     asyncio.run(run())
 
 
+@cli.command(name="scrape-one")
+@click.argument("url")
+@click.option("--call-ml", is_flag=True, help="Appelle l'API ML et affiche aussi la prédiction")
+@click.option("--ml-url", default=None, help="URL de l'API ML (défaut depuis .env)")
+def scrape_one(url: str, call_ml: bool, ml_url: str | None):
+    """Scrape une seule annonce Licitor et sort le JSON prêt pour /predict.
+
+    Exemple :
+      python -m src.cli scrape-one "https://www.licitor.com/.../jeudi-2-avril-2026.html#107606"
+      python -m src.cli scrape-one "https://www.licitor.com/annonce/107606-xxxxx.html" --call-ml
+    """
+    import json
+    from urllib.parse import urlparse, urlunparse
+    from .scraper.browser import browser_session, fetch_page
+    from .scraper.parsers import parse_adjudication_detail, parse_historique_list
+
+    async def run():
+        async with browser_session() as ctx:
+            # Si l'URL est une page audience avec ancre #ID, on tente de la résoudre
+            # vers l'URL d'annonce directe
+            anchor = urlparse(url).fragment
+            target_url = url
+
+            status, html = await fetch_page(ctx, url)
+            if status >= 400:
+                click.secho(f"HTTP {status} — accès bloqué/refusé", fg="red")
+                return
+
+            # Si pas une page annonce directe, chercher l'annonce dans la liste
+            if "/annonce/" not in url:
+                items = parse_historique_list(html, archives_only=False)
+                match = None
+                for it in items:
+                    if anchor and anchor in it.get("source_url", ""):
+                        match = it
+                        break
+                if not match and items:
+                    click.echo(f"Pas d'ancre #{anchor} matchée. {len(items)} annonces sur cette page :")
+                    for i, it in enumerate(items[:5], 1):
+                        click.echo(f"  {i}. {it['source_url']}")
+                    click.echo("\nRelance avec une URL d'annonce directe.")
+                    return
+                if not match:
+                    click.secho("Aucune annonce trouvée sur la page", fg="red")
+                    return
+
+                target_url = match["source_url"]
+                click.echo(f"→ Annonce résolue : {target_url}")
+                status, html = await fetch_page(ctx, target_url)
+                if status >= 400:
+                    click.secho(f"HTTP {status} sur la page annonce", fg="red")
+                    return
+
+            # Parse le détail
+            parsed = parse_adjudication_detail(html, target_url)
+
+            # Construit le payload /predict
+            payload = {
+                "tribunal": parsed.get("tribunal") or "TJ Paris",
+                "city": parsed.get("city") or "Unknown",
+                "region": parsed.get("region"),
+                "property_type": parsed.get("property_type") or "Appartement",
+                "surface": float(parsed.get("surface") or 0),
+                "rooms": int(parsed.get("rooms") or 0),
+                "initial_price": float(parsed.get("initial_price") or 0),
+            }
+            for opt in ("postal_code", "address", "description"):
+                if parsed.get(opt):
+                    payload[opt] = parsed[opt]
+            if parsed.get("adjudication_date"):
+                ad = parsed["adjudication_date"]
+                payload["adjudication_date"] = ad.isoformat() if hasattr(ad, "isoformat") else str(ad)
+
+            click.echo("")
+            click.echo("─── Payload /predict ──────────────────────────")
+            click.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+            # Affichage extras utiles pour debug
+            extras = {k: v for k, v in parsed.items()
+                      if k not in payload and k.startswith(("adjudicated", "lawyer", "source"))}
+            if extras:
+                click.echo("\n─── Extras (non envoyés à /predict) ───────────")
+                click.echo(json.dumps(extras, ensure_ascii=False, indent=2, default=str))
+
+            # Optionnel : appelle l'API ML
+            if call_ml:
+                import httpx
+                from .config import settings
+                base = ml_url or settings.ml_api_url
+                click.echo(f"\n─── Appel POST {base}/predict ─────────────────")
+                try:
+                    with httpx.Client(timeout=10) as c:
+                        r = c.post(f"{base}/predict", json=payload)
+                    if r.status_code == 200:
+                        click.secho(json.dumps(r.json(), ensure_ascii=False, indent=2), fg="green")
+                    else:
+                        click.secho(f"HTTP {r.status_code} : {r.text[:300]}", fg="red")
+                except Exception as e:
+                    click.secho(f"API ML KO : {e}", fg="red")
+
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     cli()
