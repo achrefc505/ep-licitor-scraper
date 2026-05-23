@@ -16,21 +16,16 @@ def predict_price(
     rooms: int,
     initial_price: float,
     auction_date: Optional[str] = None,
+    postal_code: Optional[str] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    address: Optional[str] = None,
 ) -> Optional[dict]:
-    """Appelle POST /predict de ep-ml-api.
-    Retourne le dict réponse ou None si l'API est down.
+    """Appelle POST /predict de ep-ml-api. Retourne dict réponse ou None si KO.
 
-    Réponse type :
-        {
-            "adjudicated_price_predicted": 376365.65,
-            "low_estimate": 321288.46,
-            "high_estimate": 447147.10,
-            "confidence": 80,
-            "model_used": "tribunal",
-            "model_name": "TJ Paris",
-            "features_version": "v1",
-            "model_metrics": {...}
-        }
+    Les nouveaux champs postal_code/lat/lng (v2) discriminent fortement les
+    prédictions intra-ville (Paris 16e vs 11e, etc.). Toujours les passer
+    quand on les a.
     """
     payload = {
         "tribunal": tribunal or "Unknown",
@@ -43,6 +38,14 @@ def predict_price(
     }
     if auction_date:
         payload["adjudication_date"] = auction_date
+    if postal_code:
+        payload["postal_code"] = str(postal_code)
+    if latitude is not None:
+        payload["latitude"] = float(latitude)
+    if longitude is not None:
+        payload["longitude"] = float(longitude)
+    if address:
+        payload["address"] = address
 
     try:
         with httpx.Client(timeout=settings.ml_api_timeout) as c:

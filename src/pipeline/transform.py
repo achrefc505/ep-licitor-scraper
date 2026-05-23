@@ -69,6 +69,7 @@ def upcoming_to_app(row) -> dict:
     initial = float(row.initial_price or 0)
 
     # Appel API ML (peut être None si l'API est down → fallback)
+    # v2 : on passe postal_code + lat/lng pour des prédictions intra-ville précises
     pred = predict_price(
         tribunal=row.tribunal or "",
         city=row.city or "",
@@ -78,6 +79,10 @@ def upcoming_to_app(row) -> dict:
         rooms=int(row.rooms or 0),
         initial_price=initial,
         auction_date=row.auction_date.isoformat() if row.auction_date else None,
+        postal_code=row.postal_code,
+        latitude=float(row.latitude) if row.latitude is not None else None,
+        longitude=float(row.longitude) if row.longitude is not None else None,
+        address=row.address,
     )
 
     if pred:
