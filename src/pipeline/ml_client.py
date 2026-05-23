@@ -20,6 +20,8 @@ def predict_price(
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
     address: Optional[str] = None,
+    description: Optional[str] = None,
+    floor: Optional[str] = None,
 ) -> Optional[dict]:
     """Appelle POST /predict de ep-ml-api. Retourne dict réponse ou None si KO.
 
@@ -46,6 +48,10 @@ def predict_price(
         payload["longitude"] = float(longitude)
     if address:
         payload["address"] = address
+    if description:
+        payload["description"] = description
+    if floor:
+        payload["floor"] = str(floor)
 
     try:
         with httpx.Client(timeout=settings.ml_api_timeout) as c:

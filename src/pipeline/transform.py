@@ -83,6 +83,8 @@ def upcoming_to_app(row) -> dict:
         latitude=float(row.latitude) if row.latitude is not None else None,
         longitude=float(row.longitude) if row.longitude is not None else None,
         address=row.address,
+        description=row.description,
+        floor=row.floor,
     )
 
     if pred:
