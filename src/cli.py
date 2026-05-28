@@ -214,6 +214,90 @@ def inspect(url: str):
     asyncio.run(run())
 
 
+@cli.command(name="audit-docs")
+@click.option("--limit", type=int, default=500, help="Nb de pages détail à analyser")
+def audit_docs(limit: int):
+    """Analyse les pages déjà scrapées : combien d'enchères ont des documents
+    (CCV/PV) téléchargeables directement, sans demander à l'avocat ?
+
+    Ne retouche PAS Licitor — re-parse le HTML stocké dans raw_pages.
+    """
+    from collections import Counter
+    from sqlalchemy import select
+    from .db import db_session
+    from .models import RawPage
+    from .scraper.parsers import parse_adjudication_detail
+
+    with db_session() as s:
+        pages = s.execute(
+            select(RawPage)
+            .where(RawPage.page_type.like("%detail%"))
+            .where(RawPage.http_status < 400)
+            .where(RawPage.html.is_not(None))
+            .limit(limit)
+        ).scalars().all()
+
+    if not pages:
+        click.secho("Aucune page détail stockée. Lance d'abord un scrape.", fg="yellow")
+        return
+
+    total = len(pages)
+    with_docs = 0
+    type_counter = Counter()
+    pdf_count = 0
+    examples = []
+
+    for p in pages:
+        try:
+            parsed = parse_adjudication_detail(p.html, p.url)
+        except Exception:
+            continue
+        docs = parsed.get("documents") or []
+        if docs:
+            with_docs += 1
+            for d in docs:
+                type_counter[d["type"]] += 1
+                if d["is_pdf"]:
+                    pdf_count += 1
+            if len(examples) < 5:
+                examples.append((p.url, docs))
+
+    click.echo("")
+    click.echo("═══ AUDIT DOCUMENTS (sur données déjà scrapées) ═══")
+    click.echo(f"  Pages détail analysées        : {total}")
+    click.echo(f"  Avec au moins 1 document      : {with_docs}  ({with_docs*100//max(total,1)}%)")
+    click.echo(f"  Liens PDF directs détectés    : {pdf_count}")
+    click.echo("")
+    click.echo("  Répartition par type :")
+    for t, n in type_counter.most_common():
+        click.echo(f"    {t:20} {n}")
+    click.echo("")
+
+    if examples:
+        click.echo("  Exemples (5 premiers) :")
+        for url, docs in examples:
+            click.echo(f"    • {url}")
+            for d in docs[:3]:
+                flag = "PDF" if d["is_pdf"] else "lien"
+                click.echo(f"        [{flag}] {d['type']:16} {d['label'][:60]}")
+    click.echo("")
+
+    # Verdict
+    pct = with_docs * 100 // max(total, 1)
+    if pct >= 50:
+        click.secho(
+            f"✓ {pct}% des enchères ont des docs directs → tu peux largement "
+            "te passer d'emailer les avocats pour la beta !", fg="green")
+    elif pct >= 15:
+        click.secho(
+            f"~ {pct}% ont des docs directs → mix : direct quand dispo, "
+            "email avocat sinon.", fg="cyan")
+    else:
+        click.secho(
+            f"⚠ Seulement {pct}% ont des docs directs → il faudra surtout "
+            "demander les CCV aux avocats (workflow n8n).", fg="yellow")
+
+
 @cli.command(name="scrape-one")
 @click.argument("url")
 @click.option("--call-ml", is_flag=True, help="Appelle l'API ML et affiche aussi la prédiction")

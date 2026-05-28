@@ -341,7 +341,79 @@ def parse_adjudication_detail(html: str, source_url: str) -> dict:
         if name_el:
             data["lawyer_name"] = _clean(name_el.get_text())
 
+    # --- Détection des documents téléchargeables (CCV / PV / diagnostics) ---
+    # Objectif : savoir empiriquement si les docs sont accessibles directement
+    # (sans avoir à les demander à l'avocat).
+    data["documents"] = _extract_documents(soup, source_url)
+
     return data
+
+
+# Mots-clés indiquant un document juridique d'enchère
+_DOC_KEYWORDS = re.compile(
+    r"cahier|conditions?\s+de\s+vente|ccv|proc[èe]s[-\s]verbal|"
+    r"\bpv\b|descriptif|diagnostic|dpe|expertise|jugement|"
+    r"r[èe]glement|annexe|t[ée]l[ée]charger|document",
+    re.IGNORECASE,
+)
+
+
+def _extract_documents(soup, source_url: str) -> list[dict]:
+    """Repère tous les liens vers des documents sur la page détail.
+
+    Retourne une liste de {url, label, type, is_pdf}. Vide si aucun trouvé
+    (= il faudra demander le CCV à l'avocat).
+    """
+    docs: list[dict] = []
+    seen: set[str] = set()
+
+    for a in soup.select("a[href]"):
+        href = a.get("href", "").strip()
+        if not href or href.startswith(("mailto:", "tel:", "#", "javascript:")):
+            continue
+
+        label = _clean(a.get_text()) or ""
+        # Texte du lien + attributs title/aria-label pour maximiser la détection
+        haystack = " ".join(filter(None, [
+            label, a.get("title", ""), a.get("aria-label", ""), href,
+        ]))
+
+        is_pdf = bool(re.search(r"\.pdf(\?|$)", href, re.IGNORECASE))
+        is_doc_link = is_pdf or bool(_DOC_KEYWORDS.search(haystack))
+        if not is_doc_link:
+            continue
+
+        full_url = urljoin(source_url, href)
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+
+        # Classer le type de document
+        doc_type = _classify_document(haystack)
+        docs.append({
+            "url": full_url,
+            "label": label[:200] or doc_type,
+            "type": doc_type,
+            "is_pdf": is_pdf,
+        })
+
+    return docs
+
+
+def _classify_document(text: str) -> str:
+    """Classe un document selon son intitulé."""
+    t = text.lower()
+    if re.search(r"cahier|conditions?\s+de\s+vente|ccv", t):
+        return "cahier_charges"
+    if re.search(r"proc[èe]s[-\s]verbal|\bpv\b|descriptif", t):
+        return "pv_descriptif"
+    if re.search(r"diagnostic|dpe|amiante|plomb", t):
+        return "diagnostic"
+    if re.search(r"jugement", t):
+        return "jugement"
+    if re.search(r"expertise", t):
+        return "expertise"
+    return "autre"
 
 
 def _map_field(data: dict, key: str, value: str | None):
