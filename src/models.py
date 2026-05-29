@@ -120,3 +120,14 @@ class UpcomingAuction(Base):
 
     scraped_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DocumentSummary(Base):
+    __tablename__ = "document_summaries"
+
+    id = Column(UNIQUEIDENTIFIER, primary_key=True, default=uuid.uuid4)
+    auction_id = Column(String(36), nullable=False, index=True)
+    summary_json = Column(Text, nullable=False)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    model_version = Column(String(50), nullable=True)
+    pdf_url = Column(String(800), nullable=True)

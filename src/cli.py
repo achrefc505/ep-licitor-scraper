@@ -401,5 +401,37 @@ def scrape_one(url: str, call_ml: bool, ml_url: str | None):
     asyncio.run(run())
 
 
+@cli.command("summarize-ccv")
+@click.argument("auction_id")
+@click.option("--pdf-url", default=None, help="URL du PDF CCV")
+@click.option("--pdf-path", default=None, help="Chemin local vers le PDF")
+@click.option("--force", is_flag=True, default=False, help="Recalcule même si résumé existant")
+@click.option("--model", default="claude-sonnet-4-6", show_default=True)
+def cmd_summarize_ccv(auction_id: str, pdf_url: str, pdf_path: str, force: bool, model: str):
+    """Génère un résumé IA du Cahier des Conditions de Vente pour une enchère.
+
+    Exemple : ep-scraper summarize-ccv <UUID> --pdf-url https://...
+    """
+    import json
+    from .ccv_summary import summarize_ccv
+
+    if not pdf_url and not pdf_path:
+        click.secho("Fournir --pdf-url ou --pdf-path", fg="red")
+        raise SystemExit(1)
+
+    result = summarize_ccv(
+        auction_id=auction_id,
+        pdf_url=pdf_url,
+        pdf_path=pdf_path,
+        force=force,
+        model=model,
+    )
+    if result:
+        click.secho("\n✓ Résumé généré :", fg="green")
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        click.secho("Aucun résumé généré — PDF absent ou illisible.", fg="yellow")
+
+
 if __name__ == "__main__":
     cli()
